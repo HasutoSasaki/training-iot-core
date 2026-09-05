@@ -1,0 +1,33 @@
+# Environment and credentials
+.env
+.env.*
+!.env.example
+firmware/**/include/secrets.h
+firmware/**/data/aws-iot/endpoint.txt
+*.pem
+*.key
+*.crt
+
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Node.js / CDK
+node_modules/
+.pnpm-store/
+cdk.out/
+coverage/
+dist/
+
+# Local Grafana data
+grafana/data/
+
+# Analysis artifacts
+analysis/data/
+analysis/output/
+*.ipynb_checkpoints
+
+# Editor and OS files
+.DS_Store
+.vscode/

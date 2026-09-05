@@ -1,0 +1,20 @@
+services:
+  grafana:
+    image: grafana/grafana-oss:latest
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      AWS_REGION: ${AWS_REGION:-ap-northeast-1}
+      # tools/start-grafana.sh が sandbox 経由で取得した短期認証情報だけを渡す。
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      ATHENA_DATABASE: ${ATHENA_DATABASE:-training_iot}
+      ATHENA_WORKGROUP: ${ATHENA_WORKGROUP:-training-iot}
+      GF_PLUGINS_PREINSTALL: grafana-athena-datasource
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  grafana-data:

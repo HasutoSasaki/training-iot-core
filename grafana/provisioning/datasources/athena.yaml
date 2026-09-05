@@ -1,0 +1,17 @@
+apiVersion: 1
+
+datasources:
+  - name: Training Athena
+    type: grafana-athena-datasource
+    access: proxy
+    version: 2
+    jsonData:
+      authType: keys
+      defaultRegion: $AWS_REGION
+      catalog: AwsDataCatalog
+      database: $ATHENA_DATABASE
+      workgroup: $ATHENA_WORKGROUP
+    secureJsonData:
+      accessKey: $AWS_ACCESS_KEY_ID
+      secretKey: $AWS_SECRET_ACCESS_KEY
+      sessionToken: $AWS_SESSION_TOKEN
