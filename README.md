@@ -19,6 +19,7 @@ M5Stack S3 系デバイスを使って、トレーニング中の動作データ
 - [構築と確認](docs/operations.md): デプロイ、認証、Grafana起動の手順
 - [テレメトリ仕様](docs/telemetry-schema.md): MQTTトピックとJSON形式
 - [ベンチプレス分析の提案](docs/bench-press-analysis.md): デバイス取付位置と使用データ、必要な変更
+- [ベンチプレス分析の実装計画](docs/bench-press-implementation-plan.md): 100 Hz 化、0.5 秒バッチ、整数化とスキーマ v2 の手順
 
 ## 最初の到達点
 
