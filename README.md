@@ -18,6 +18,7 @@ M5Stack S3 系デバイスを使って、トレーニング中の動作データ
 - [構成とデータの流れ](docs/architecture.md): 実機、AWS、ローカルGrafanaの全体像
 - [構築と確認](docs/operations.md): デプロイ、認証、Grafana起動の手順
 - [テレメトリ仕様](docs/telemetry-schema.md): MQTTトピックとJSON形式
+- [ベンチプレス分析の提案](docs/bench-press-analysis.md): デバイス取付位置と使用データ、必要な変更
 
 ## 最初の到達点
 
