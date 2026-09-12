@@ -1,0 +1,102 @@
+{
+  "id": null,
+  "uid": "training-imu",
+  "title": "トレーニングIMU",
+  "description": "Basic Ingest → Firehose → S3 → Athena の動作確認用",
+  "tags": ["training", "imu"],
+  "timezone": "browser",
+  "editable": true,
+  "schemaVersion": 41,
+  "version": 1,
+  "refresh": "",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datehour",
+        "label": "保存時刻 (JST)",
+        "type": "textbox",
+        "query": "2026/08/30/14",
+        "current": {
+          "text": "2026/08/30/14",
+          "value": "2026/08/30/14"
+        },
+        "options": [],
+        "hide": 0
+      },
+      {
+        "name": "device_id",
+        "label": "デバイスID",
+        "type": "textbox",
+        "query": "m5sticks3-01",
+        "current": {
+          "text": "m5sticks3-01",
+          "value": "m5sticks3-01"
+        },
+        "options": [],
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "実機IMU加速度",
+      "type": "timeseries",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "P10E798CD7A888334"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "connectionArgs": {
+            "catalog": "__default",
+            "database": "__default",
+            "region": "__default",
+            "resultReuseEnabled": false,
+            "resultReuseMaxAgeInMinutes": 60
+          },
+          "rawSQL": "SELECT\n  date_add('millisecond', sample.offset_ms, CAST(from_iso8601_timestamp(captured_at) AS timestamp)) AS time,\n  sample.ax,\n  sample.ay,\n  sample.az\nFROM telemetry_raw\nCROSS JOIN UNNEST(samples) AS t(sample)\nWHERE datehour = '${datehour}'\n  AND device_id = '${device_id}'\nORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      }
+    }
+  ]
+}
