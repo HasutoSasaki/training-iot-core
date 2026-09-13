@@ -2,12 +2,15 @@
   "id": null,
   "uid": "training-imu",
   "title": "トレーニングIMU",
-  "description": "Basic Ingest → Firehose → S3 → Athena の動作確認用",
-  "tags": ["training", "imu"],
+  "description": "Basic Ingest → Firehose → S3 → Athena の動作確認用。schema_version 1/2 の両方を g 単位で表示する。",
+  "tags": [
+    "training",
+    "imu"
+  ],
   "timezone": "browser",
   "editable": true,
   "schemaVersion": 41,
-  "version": 1,
+  "version": 2,
   "refresh": "",
   "time": {
     "from": "now-1h",
@@ -19,10 +22,10 @@
         "name": "datehour",
         "label": "保存時刻 (JST)",
         "type": "textbox",
-        "query": "2026/08/30/14",
+        "query": "2026/09/12/21",
         "current": {
-          "text": "2026/08/30/14",
-          "value": "2026/08/30/14"
+          "text": "2026/09/12/21",
+          "value": "2026/09/12/21"
         },
         "options": [],
         "hide": 0
@@ -35,6 +38,18 @@
         "current": {
           "text": "m5sticks3-01",
           "value": "m5sticks3-01"
+        },
+        "options": [],
+        "hide": 0
+      },
+      {
+        "name": "set_id",
+        "label": "セット番号 (空=全部)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
         },
         "options": [],
         "hide": 0
@@ -67,7 +82,7 @@
             "resultReuseEnabled": false,
             "resultReuseMaxAgeInMinutes": 60
           },
-          "rawSQL": "SELECT\n  date_add('millisecond', sample.offset_ms, CAST(from_iso8601_timestamp(captured_at) AS timestamp)) AS time,\n  sample.ax,\n  sample.ay,\n  sample.az\nFROM telemetry_raw\nCROSS JOIN UNNEST(samples) AS t(sample)\nWHERE datehour = '${datehour}'\n  AND device_id = '${device_id}'\nORDER BY time"
+          "rawSQL": "WITH batches AS (\n  SELECT\n    schema_version,\n    samples,\n    -- v2はミリ秒精度のbatch_start_msを使う。v1は秒精度のcaptured_atしか無い。\n    CASE\n      WHEN schema_version >= 2 AND batch_start_ms IS NOT NULL\n        THEN from_unixtime(batch_start_ms / 1e3)\n      ELSE CAST(from_iso8601_timestamp(captured_at) AS timestamp)\n    END AS batch_time,\n    set_id\n  FROM telemetry_raw\n  WHERE datehour = '${datehour}'\n    AND device_id = '${device_id}'\n),\nwindowed AS (\n  -- サンプル展開の前に時間範囲で絞る。100 Hzでは1時間あたり36万行になるため。\n  SELECT *\n  FROM batches\n  WHERE $__timeFilter(batch_time)\n    AND ('${set_id}' = '' OR CAST(set_id AS varchar) = '${set_id}')\n)\nSELECT\n  date_add('millisecond', s.offset_ms, batch_time) AS time,\n  -- v2はmgの整数、v1はgの小数。表示はgに揃える。\n  CASE WHEN schema_version >= 2 THEN s.ax / 1e3 ELSE s.ax END AS ax,\n  CASE WHEN schema_version >= 2 THEN s.ay / 1e3 ELSE s.ay END AS ay,\n  CASE WHEN schema_version >= 2 THEN s.az / 1e3 ELSE s.az END AS az\nFROM windowed\nCROSS JOIN UNNEST(samples) AS t(s)\nORDER BY time"
         }
       ],
       "fieldConfig": {
@@ -82,7 +97,8 @@
             "fillOpacity": 0,
             "showPoints": "auto",
             "spanNulls": false
-          }
+          },
+          "unit": "accG"
         },
         "overrides": []
       },
