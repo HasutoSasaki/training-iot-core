@@ -4,15 +4,22 @@
 #include <LittleFS.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <math.h>
+#include <sys/time.h>
 #include <time.h>
 
 namespace {
 
-constexpr uint32_t SAMPLING_HZ = 10;
+constexpr uint32_t SAMPLING_HZ = 100;
 constexpr uint32_t SAMPLE_INTERVAL_MS = 1000 / SAMPLING_HZ;
-constexpr size_t SAMPLES_PER_BATCH = 10;
-constexpr size_t MAX_PAYLOAD_BYTES = 4600;
+constexpr size_t SAMPLES_PER_BATCH = 50;
+// 50サンプルの最悪ケース（各値が最大桁数）は約4,595バイト。上限を4.5 KiBに置き、
+// IoT CoreとFirehoseの5 KiB課金単位に1メッセージで収まるようにする。
+constexpr size_t PAYLOAD_BUFFER_BYTES = 4800;
+constexpr size_t PAYLOAD_LIMIT_BYTES = 4608;
 constexpr char AWS_IOT_THING_NAME[] = "m5sticks3-01";
+// 装着位置。手首などを追加するときはここを変える。
+constexpr char PLACEMENT[] = "barbell";
 constexpr uint32_t DASHBOARD_REFRESH_MS = 250;
 // まぶしさを抑えた、オリーブ・砂・土色のスポーツ配色です。
 constexpr uint16_t COLOR_BACKGROUND = 0x2684;  // 深いオリーブ
@@ -26,21 +33,24 @@ constexpr uint16_t COLOR_RED = 0xD348;         // テラコッタ
 WiFiClientSecure tlsClient;
 PubSubClient mqttClient(tlsClient);
 
+// 加速度はmg、角速度は0.1 dpsの整数で保持する。単位はschema_version 2の仕様。
 struct ImuSample {
   uint32_t offsetMs;
-  float ax;
-  float ay;
-  float az;
-  float gx;
-  float gy;
-  float gz;
+  int16_t ax;
+  int16_t ay;
+  int16_t az;
+  int16_t gx;
+  int16_t gy;
+  int16_t gz;
 };
 
 ImuSample samples[SAMPLES_PER_BATCH];
 size_t sampleCount = 0;
 uint64_t sequence = 0;
+uint32_t setId = 0;
 uint32_t batchStartedAtMs = 0;
-uint32_t lastSampleAtMs = 0;
+uint64_t batchStartWallMs = 0;
+uint32_t nextSampleAtMs = 0;
 String sessionId;
 String telemetryTopic;
 String awsIoTEndpoint;
@@ -48,7 +58,27 @@ ImuSample latestSample {};
 bool hasLatestSample = false;
 uint32_t lastPayloadBytes = 0;
 uint32_t lastDashboardAtMs = 0;
+uint32_t lastSetIdOnScreen = UINT32_MAX;
 bool dashboardInitialized = false;
+
+// float値を固定小数の整数へ丸める。センサーが飽和しても範囲外にならないよう抑える。
+int16_t toFixedPoint(float value, float scale) {
+  const float scaled = roundf(value * scale);
+  if (scaled >= 32767.0f) {
+    return 32767;
+  }
+  if (scaled <= -32768.0f) {
+    return -32768;
+  }
+  return static_cast<int16_t>(scaled);
+}
+
+// NTP同期済みの壁時計からUnix epochミリ秒を取る。
+uint64_t wallClockMs() {
+  struct timeval tv {};
+  gettimeofday(&tv, nullptr);
+  return static_cast<uint64_t>(tv.tv_sec) * 1000ULL + static_cast<uint64_t>(tv.tv_usec) / 1000ULL;
+}
 
 void drawHeader(const char* label, uint32_t statusColor) {
   M5.Display.fillScreen(COLOR_BACKGROUND);
@@ -94,6 +124,8 @@ void drawDashboardShell() {
   M5.Display.setTextSize(1);
   M5.Display.setCursor(17, 51);
   M5.Display.print("Z ACCELERATION");
+  M5.Display.setCursor(M5.Display.width() - 72, 51);
+  M5.Display.print("SET");
   M5.Display.setTextSize(2);
   M5.Display.setTextColor(COLOR_AMBER, COLOR_CARD);
   M5.Display.setCursor(17, 99);
@@ -110,6 +142,16 @@ void renderDashboard() {
   const int batteryLevel = M5.Power.getBatteryLevel();
   if (!dashboardInitialized) {
     drawDashboardShell();
+    lastSetIdOnScreen = UINT32_MAX;
+  }
+
+  if (setId != lastSetIdOnScreen) {
+    M5.Display.fillRect(M5.Display.width() - 72, 60, 56, 24, COLOR_CARD);
+    M5.Display.setTextColor(COLOR_AMBER, COLOR_CARD);
+    M5.Display.setTextSize(3);
+    M5.Display.setCursor(M5.Display.width() - 72, 62);
+    M5.Display.printf("%lu", static_cast<unsigned long>(setId));
+    lastSetIdOnScreen = setId;
   }
 
   // カード自体は描き直さず、変化する値の領域だけ消して更新します。
@@ -119,14 +161,16 @@ void renderDashboard() {
   M5.Display.setTextSize(1);
   M5.Display.setCursor(M5.Display.width() - 71, 15);
   M5.Display.printf("%d%%", batteryLevel);
-  M5.Display.fillRect(17, 61, M5.Display.width() - 34, 28, COLOR_CARD);
+  // セット番号の表示に重ならないよう、加速度の値だけを消して描き直す。
+  M5.Display.fillRect(17, 61, M5.Display.width() - 89, 28, COLOR_CARD);
   M5.Display.fillRect(17, 115, M5.Display.width() - 34, 16, COLOR_CARD);
 
   M5.Display.setTextColor(COLOR_TEXT, COLOR_CARD);
   M5.Display.setTextSize(3);
   M5.Display.setCursor(17, 62);
+  // 保持しているのはmgの整数だが、画面はgのほうが読みやすいので戻して表示する。
   if (hasLatestSample) {
-    M5.Display.printf("%+.2f g", latestSample.az);
+    M5.Display.printf("%+.2f g", latestSample.az / 1000.0f);
   } else {
     M5.Display.print("-- g");
   }
@@ -135,11 +179,11 @@ void renderDashboard() {
   M5.Display.setTextSize(2);
   M5.Display.setCursor(17, 115);
   if (hasLatestSample) {
-    M5.Display.printf("%+.2f", latestSample.ax);
+    M5.Display.printf("%+.2f", latestSample.ax / 1000.0f);
     M5.Display.setCursor(91, 115);
-    M5.Display.printf("%+.2f", latestSample.ay);
+    M5.Display.printf("%+.2f", latestSample.ay / 1000.0f);
     M5.Display.setCursor(165, 115);
-    M5.Display.printf("%+.2f", latestSample.az);
+    M5.Display.printf("%+.2f", latestSample.az / 1000.0f);
   } else {
     M5.Display.print("--");
   }
@@ -245,7 +289,7 @@ bool appendSampleJson(char* payload, size_t capacity, size_t* used, const ImuSam
   const int written = snprintf(
       payload + *used,
       capacity - *used,
-      "%s{\"offset_ms\":%lu,\"ax\":%.4f,\"ay\":%.4f,\"az\":%.4f,\"gx\":%.4f,\"gy\":%.4f,\"gz\":%.4f}",
+      "%s{\"offset_ms\":%lu,\"ax\":%d,\"ay\":%d,\"az\":%d,\"gx\":%d,\"gy\":%d,\"gz\":%d}",
       prependComma ? "," : "",
       static_cast<unsigned long>(sample.offsetMs),
       sample.ax,
@@ -266,27 +310,51 @@ void publishBatch() {
     return;
   }
 
-  char payload[MAX_PAYLOAD_BYTES] = {};
+  // 4.8 KiBの配列をスタックに置かないよう静的にする。loop以外から呼ばれることはない。
+  static char payload[PAYLOAD_BUFFER_BYTES];
   size_t used = 0;
   const String capturedAt = iso8601Now();
   const int headerSize = snprintf(
       payload,
       sizeof(payload),
-      "{\"schema_version\":1,\"device_id\":\"%s\",\"session_id\":\"%s\",\"captured_at\":\"%s\",\"sequence\":%llu,\"sampling_hz\":%lu,\"samples\":[",
+      "{\"schema_version\":2,\"device_id\":\"%s\",\"session_id\":\"%s\",\"set_id\":%lu,"
+      "\"placement\":\"%s\",\"captured_at\":\"%s\",\"batch_start_ms\":%llu,"
+      "\"sequence\":%llu,\"sampling_hz\":%lu,\"samples\":[",
       AWS_IOT_THING_NAME,
       sessionId.c_str(),
+      static_cast<unsigned long>(setId),
+      PLACEMENT,
       capturedAt.c_str(),
+      static_cast<unsigned long long>(batchStartWallMs),
       static_cast<unsigned long long>(sequence),
       static_cast<unsigned long>(SAMPLING_HZ));
   if (headerSize < 0 || static_cast<size_t>(headerSize) >= sizeof(payload)) {
     showMessage("Payload too large", "Header", COLOR_RED);
+    sampleCount = 0;
     return;
   }
   used = static_cast<size_t>(headerSize);
 
+  // 実測のサンプル間隔。10 ms付近に収まっているかをシリアルで確認するために出す。
+  uint32_t deltaMin = UINT32_MAX;
+  uint32_t deltaMax = 0;
+  for (size_t index = 1; index < sampleCount; index++) {
+    const uint32_t delta = samples[index].offsetMs - samples[index - 1].offsetMs;
+    if (delta < deltaMin) {
+      deltaMin = delta;
+    }
+    if (delta > deltaMax) {
+      deltaMax = delta;
+    }
+  }
+  if (sampleCount < 2) {
+    deltaMin = 0;
+  }
+
   for (size_t index = 0; index < sampleCount; index++) {
     if (!appendSampleJson(payload, sizeof(payload), &used, samples[index], index > 0)) {
       showMessage("Payload too large", "Samples", COLOR_RED);
+      sampleCount = 0;
       return;
     }
   }
@@ -294,17 +362,26 @@ void publishBatch() {
   const int footerSize = snprintf(payload + used, sizeof(payload) - used, "]}");
   if (footerSize < 0 || static_cast<size_t>(footerSize) >= sizeof(payload) - used) {
     showMessage("Payload too large", "Footer", COLOR_RED);
+    sampleCount = 0;
     return;
   }
   used += static_cast<size_t>(footerSize);
 
-  if (used > 4500) {
+  if (used > PAYLOAD_LIMIT_BYTES) {
     showMessage("Payload too large", String(used).c_str(), COLOR_RED);
+    sampleCount = 0;
     return;
   }
 
   if (mqttClient.publish(telemetryTopic.c_str(), reinterpret_cast<const uint8_t*>(payload), used, false)) {
-    Serial.printf("Telemetry sent: sequence=%llu bytes=%u\n", static_cast<unsigned long long>(sequence), static_cast<unsigned int>(used));
+    Serial.printf(
+        "Telemetry sent: sequence=%llu set=%lu bytes=%u samples=%u dt_min=%lu dt_max=%lu\n",
+        static_cast<unsigned long long>(sequence),
+        static_cast<unsigned long>(setId),
+        static_cast<unsigned int>(used),
+        static_cast<unsigned int>(sampleCount),
+        static_cast<unsigned long>(deltaMin),
+        static_cast<unsigned long>(deltaMax));
     sequence++;
     lastPayloadBytes = used;
   } else {
@@ -313,27 +390,29 @@ void publishBatch() {
   sampleCount = 0;
 }
 
+// 呼び出し側が M5.Imu.update() で新しいデータを確認済みであることを前提にする。
 void collectSample(uint32_t now) {
   if (sampleCount == 0) {
     batchStartedAtMs = now;
+    batchStartWallMs = wallClockMs();
   }
 
-  M5.Imu.update();
   m5::imu_data_t imu {};
   M5.Imu.getImuData(&imu);
   samples[sampleCount] = {
+      // offset_msは予定時刻ではなく実測値。間隔の乱れをそのまま残す。
       .offsetMs = now - batchStartedAtMs,
-      .ax = imu.accel.x,
-      .ay = imu.accel.y,
-      .az = imu.accel.z,
-      .gx = imu.gyro.x,
-      .gy = imu.gyro.y,
-      .gz = imu.gyro.z,
+      .ax = toFixedPoint(imu.accel.x, 1000.0f),
+      .ay = toFixedPoint(imu.accel.y, 1000.0f),
+      .az = toFixedPoint(imu.accel.z, 1000.0f),
+      .gx = toFixedPoint(imu.gyro.x, 10.0f),
+      .gy = toFixedPoint(imu.gyro.y, 10.0f),
+      .gz = toFixedPoint(imu.gyro.z, 10.0f),
   };
   latestSample = samples[sampleCount];
   hasLatestSample = true;
   sampleCount++;
-  if (sampleCount == SAMPLES_PER_BATCH) {
+  if (sampleCount >= SAMPLES_PER_BATCH) {
     publishBatch();
   }
 }
@@ -358,24 +437,40 @@ void setup() {
   }
 
   mqttClient.setServer(awsIoTEndpoint.c_str(), 8883);
-  mqttClient.setBufferSize(MAX_PAYLOAD_BYTES + 128);
+  // トピック名とMQTTヘッダーの分を上乗せする。
+  mqttClient.setBufferSize(PAYLOAD_BUFFER_BYTES + 256);
 
   telemetryTopic = String("$aws/rules/training_iot_basic_ingest/training/") + AWS_IOT_THING_NAME + "/telemetry";
   sessionId = iso8601Now();
+  nextSampleAtMs = millis();
   renderDashboard();
 }
 
 void loop() {
   M5.update();
+  // ボタンAでセット番号を進める。0はセット外（ラック上、休憩）を表す。
+  if (M5.BtnA.wasPressed()) {
+    setId++;
+  }
   if (!mqttClient.connected()) {
     connectMqtt();
   }
   mqttClient.loop();
 
   const uint32_t now = millis();
-  if (now - lastSampleAtMs >= SAMPLE_INTERVAL_MS) {
-    lastSampleAtMs = now;
-    collectSample(now);
+  // 予定時刻を積み上げて、millis()差分方式のドリフトを避ける。
+  if (static_cast<int32_t>(now - nextSampleAtMs) >= 0) {
+    // IMUに新しい値が来たときだけ取る。同じ値を重複して送らないため。
+    if (M5.Imu.update()) {
+      collectSample(now);
+      nextSampleAtMs += SAMPLE_INTERVAL_MS;
+      // collectSampleは送信でブロックし得るので、判定にはnowではなく現在時刻を読み直す。
+      const uint32_t afterCollect = millis();
+      if (static_cast<int32_t>(afterCollect - nextSampleAtMs) >= 0) {
+        // 予定を追い越した場合は、まとめ取りせず間隔を取り直す。
+        nextSampleAtMs = afterCollect + SAMPLE_INTERVAL_MS;
+      }
+    }
   }
   if (now - lastDashboardAtMs >= DASHBOARD_REFRESH_MS) {
     lastDashboardAtMs = now;
