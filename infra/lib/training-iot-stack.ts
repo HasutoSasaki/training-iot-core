@@ -161,11 +161,17 @@ export class TrainingIotStack extends cdk.Stack {
             { name: 'schema_version', type: 'int' },
             { name: 'device_id', type: 'string' },
             { name: 'session_id', type: 'string' },
+            // schema_version 2 で追加。v1で保存済みの行ではNULLになる。
+            { name: 'set_id', type: 'int' },
+            { name: 'placement', type: 'string' },
             { name: 'captured_at', type: 'string' },
+            { name: 'batch_start_ms', type: 'bigint' },
             { name: 'ingested_at', type: 'bigint' },
             { name: 'sequence', type: 'bigint' },
             { name: 'sampling_hz', type: 'int' },
             {
+              // v2は加速度をmg、角速度を0.1 dpsの整数で送るが、doubleのまま読める。
+              // 列の型を変えるとv1のデータが読めなくなるため、構造体は変更しない。
               name: 'samples',
               type: 'array<struct<offset_ms:int,ax:double,ay:double,az:double,gx:double,gy:double,gz:double>>',
             },
