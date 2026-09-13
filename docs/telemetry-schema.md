@@ -47,7 +47,7 @@ v2 は 100 Hz で取得し、0.5秒ごとに50サンプルを1メッセージで
 | `schema_version` | int | ペイロードの版。現行は 2 |
 | `device_id` | string | Thing 名と同じ。Basic Ingest では購読できないため必ず含める |
 | `session_id` | string | 起動時に1回決まる。同じ電源投入中は変わらない |
-| `set_id` | int | ボタンAの押下で +1。0 はセット外（ラック上、休憩） |
+| `set_id` | int | セット番号。ボタンAを押すごとに 1 増える。起動時は 0 |
 | `placement` | string | 装着位置。`barbell`、将来 `wrist_left` などを追加 |
 | `captured_at` | string | 人が読むための秒精度の時刻。分析では `batch_start_ms` を使う |
 | `batch_start_ms` | bigint | バッチ先頭サンプルの Unix epoch ミリ秒 |
@@ -58,6 +58,8 @@ v2 は 100 Hz で取得し、0.5秒ごとに50サンプルを1メッセージで
 | `samples[].gx` `gy` `gz` | int | 角速度。0.1 dps（10 が 1 dps） |
 
 各サンプルの絶対時刻は `batch_start_ms + offset_ms` で求めます。`captured_at` は秒精度のため、バッチをまたいだ連結には使いません。
+
+`set_id` は端末に保存しないため、電源を入れ直すと 0 に戻ります。日をまたいで増え続けることはありません。どの起動の何セット目かは `session_id` と `set_id` の組で区別します。ボタンを一度押したあとは休憩中も番号が変わらないので、セット本番の部分の切り出しは分析側で動きの有無から行います。
 
 `ingested_at` はIoT Ruleが付与する受信時刻（Unix epoch ミリ秒）です。デバイス側の時刻ではないため、運動時刻の分析には使いません。
 
