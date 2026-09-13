@@ -11,6 +11,15 @@
 
 S3バケットとRuleエラーログは、スタック削除時にも保持します。保存期間の自動削除は初期版では設定しません。
 
+## ローカル設定
+
+使用するAWSプロファイル名はリポジトリに含めず、`.env` で指定します。初回だけコピーして、
+`AWS_PROFILE` に自分のプロファイル名を書いてください。`.env` はGitの管理対象外です。
+
+```bash
+cp .env.example .env
+```
+
 ## デプロイ前の確認
 
 ```bash
@@ -32,43 +41,44 @@ pnpm exec cdk deploy
 
 CDK は `training-iot-device-telemetry` ポリシーを作成します。このポリシーは、Thing に関連付けられた証明書が、その Thing 名と同じ `device_id` の Basic Ingest トピックへ発行することだけを許可します。
 
-ログイン済みの `training-iot-sandbox` プロファイルで、M5StickS3 ごとに一度だけ実行します。`m5sticks3-01` は任意の重複しない名前に置き換えてください。
+ログイン済みのプロファイルで、M5StickS3 ごとに一度だけ実行します。`m5sticks3-01` は任意の重複しない名前に置き換えてください。プロファイル名は `.env` の `AWS_PROFILE` から読み込みます。
 
 ```bash
-aws iot create-thing --thing-name m5sticks3-01 --profile training-iot-sandbox
+source .env
+
+aws iot create-thing --thing-name m5sticks3-01 --profile "$AWS_PROFILE"
 aws iot create-keys-and-certificate --set-as-active \
   --certificate-pem-outfile firmware/m5sticks3-telemetry/data/aws-iot/device-certificate.pem \
   --public-key-outfile /private/tmp/m5sticks3-01-public-key.pem \
   --private-key-outfile firmware/m5sticks3-telemetry/data/aws-iot/private-key.pem \
-  --profile training-iot-sandbox
+  --profile "$AWS_PROFILE"
 ```
 
 出力の `certificateArn` を使い、Thing とポリシーを関連付けます。
 
 ```bash
-aws iot attach-thing-principal --thing-name m5sticks3-01 --principal CERTIFICATE_ARN --profile training-iot-sandbox
-aws iot attach-policy --policy-name training-iot-device-telemetry --target CERTIFICATE_ARN --profile training-iot-sandbox
-aws iot describe-endpoint --endpoint-type iot:Data-ATS --profile training-iot-sandbox
+aws iot attach-thing-principal --thing-name m5sticks3-01 --principal CERTIFICATE_ARN --profile "$AWS_PROFILE"
+aws iot attach-policy --policy-name training-iot-device-telemetry --target CERTIFICATE_ARN --profile "$AWS_PROFILE"
+aws iot describe-endpoint --endpoint-type iot:Data-ATS --profile "$AWS_PROFILE"
 ```
 
 endpoint とRoot CAを含む4ファイルを `firmware/m5sticks3-telemetry/data/aws-iot/` に置き、PlatformIOの `pio run -t uploadfs` でLittleFSへ書き込みます。生成したファイルは秘密鍵を含むため、Gitに追加せずローカルだけで管理します。
 
 ## ローカルGrafana
 
-`sandbox` でログインし、そこから `176545285577` の
-`OrganizationAccountAccessRole` を引き受ける
-`training-iot-sandbox` プロファイルを使います。短期認証情報はGrafanaの
+`.env` の `AWS_PROFILE` に指定したプロファイルを使います。短期認証情報はGrafanaの
 起動時だけコンテナへ渡し、アクセスキーをリポジトリやGrafana設定に保存しません。
 
 ```bash
-aws login --profile sandbox
+source .env
+aws sso login --profile "$AWS_PROFILE"   # 利用している認証方式に合わせる
 ./tools/start-grafana.sh
 ```
 
 Grafanaは <http://localhost:3000> で開きます。短期認証情報の有効期限後は、
-もう一度 `aws login --profile sandbox`（必要な場合）と
-`./tools/start-grafana.sh` を実行してコンテナを再作成します。Athenaデータソースに
-必要なのは、Athena、Glue Data Catalog、rawデータ用S3、Athena結果用S3への最小権限です。
+もう一度ログインしてから `./tools/start-grafana.sh` を実行してコンテナを再作成します。
+Athenaデータソースに必要なのは、Athena、Glue Data Catalog、rawデータ用S3、
+Athena結果用S3への最小権限です。
 
 ## 最初のAthenaクエリ
 
